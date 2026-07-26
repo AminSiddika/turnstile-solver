@@ -4,6 +4,8 @@ Cloudflare Turnstile + JS-Challenge ("Just a moment...") solver.
 Design notes:
   - Backend: Camoufox (stealth Firefox build with realistic OS
     fingerprints) running headed under a virtual X server (Xvfb).
+  - Dynamic Turnstile injection + token extraction fallback for missing widgets.
+  - Trailing-slash URL normalization for route interception.
     Real Cloudflare deployments fingerprint --headless=new builds
     (HeadlessChrome UA + missing GPU/audio signals) and refuse to
     mount the Turnstile iframe; running headed under Xvfb keeps the

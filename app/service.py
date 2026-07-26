@@ -762,6 +762,9 @@ Stats: solved={_stats.get('solved',0)} errors={_stats.get('errors',0)} in_flight
 <p style='color:#888;font-size:12px;margin-top:2rem'>POST /admin/unban with {{"ip": "x.x.x.x"}} for API use</p>
 </body></html>"""
     return web.Response(text=html, content_type="text/html")
+
+
+def main():
     import warnings
     warnings.filterwarnings("ignore")
     os.environ.setdefault("PYTHONWARNINGS", "ignore")

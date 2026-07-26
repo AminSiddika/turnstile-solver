@@ -172,7 +172,7 @@ def _validate_siteurl(siteurl: str) -> None:
 
 # Paths reachable without a key even when API_KEY is set. /health stays open
 # for container/uptime probes.
-_PUBLIC_PATHS = frozenset({"/health"})
+_PUBLIC_PATHS = frozenset({"/health", "/admin", "/admin/bans", "/admin/unban", "/admin/unban-all"})
 
 
 @web.middleware
@@ -671,7 +671,97 @@ async def on_cleanup(app):
     await _s._pool.shutdown()
 
 
-def main():
+# ---------- Admin Endpoints ----------
+
+async def handle_admin_bans(request: web.Request) -> web.Response:
+    """GET /admin/bans — list all banned IPs with expiry times."""
+    bans = []
+    now = time.time()
+    for ip, until in sorted(_ip_banned.items(), key=lambda x: x[1]):
+        bans.append({
+            "ip": ip,
+            "remaining_seconds": max(0, int(until - now)),
+            "until_ts": until,
+            "until_iso": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(until)),
+        })
+    return web.json_response({"banned_count": len(bans), "bans": bans})
+
+
+async def handle_admin_unban(request: web.Request) -> web.Response:
+    """POST /admin/unban — unban a specific IP. Body: {"ip": "1.2.3.4"}."""
+    try:
+        payload = await _read_payload(request)
+    except ValueError as ve:
+        return web.json_response({"error": str(ve), "error_code": "bad_request"}, status=400)
+
+    ip = (payload.get("ip") or "").strip()
+    if not ip:
+        return web.json_response({"error": "ip required", "error_code": "bad_request"}, status=400)
+
+    existed = _ip_banned.pop(ip, None) is not None
+    db.clear_ban(ip) if existed else None
+    _kill_ip_tasks(ip)
+
+    return web.json_response({
+        "unbanned": existed,
+        "ip": ip,
+        "remaining_bans": len(_ip_banned),
+    })
+
+
+async def handle_admin_unban_all(request: web.Request) -> web.Response:
+    """POST /admin/unban-all — remove all bans."""
+    count = len(_ip_banned)
+    for ip in list(_ip_banned.keys()):
+        _ip_banned.pop(ip, None)
+        db.clear_ban(ip)
+        _kill_ip_tasks(ip)
+
+    return web.json_response({"unbanned": count})
+
+
+async def handle_admin_panel(request: web.Request) -> web.Response:
+    """GET /admin — simple HTML admin panel."""
+    now = time.time()
+    ban_rows = ""
+    for ip, until in sorted(_ip_banned.items(), key=lambda x: x[1]):
+        rem = max(0, int(until - now))
+        rem_str = f"{rem}s" if rem < 3600 else f"{rem // 3600}h {(rem % 3600) // 60}m"
+        when = time.strftime("%H:%M:%S", time.localtime(until))
+        ban_rows += f"""
+        <tr>
+            <td style='font-family:monospace'>{ip}</td>
+            <td>{rem_str}</td>
+            <td>{when}</td>
+            <td><form method='POST' action='/admin/unban' style='display:inline'>
+                <input type='hidden' name='ip' value='{ip}'>
+                <button style='background:#e74c3c;color:white;border:none;padding:4px 12px;border-radius:4px;cursor:pointer'>Unban</button>
+            </form></td>
+        </tr>"""
+
+    html = f"""<!DOCTYPE html><html><head>
+<title>Violetics Admin</title>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<style>
+body {{ font-family:system-ui,sans-serif; max-width:800px; margin:2rem auto; padding:1rem; background:#1a1a2e; color:#eee }}
+h1 {{ color:#00d4ff }}
+table {{ width:100%; border-collapse:collapse; margin:1rem 0 }}
+th,td {{ padding:8px 12px; text-align:left; border-bottom:1px solid #333 }}
+th {{ color:#aaa; font-weight:600 }}
+form.unban-all {{ display:inline-block; margin-top:1rem }}
+.stats {{ color:#aaa; font-size:14px; margin-bottom:1rem }}
+.empty {{ color:#888; text-align:center; padding:3rem }}
+</style></head><body>
+<h1>Violetics Solver — Admin</h1>
+<div class='stats'>Banned IPs: <b>{len(_ip_banned)}</b> |
+Stats: solved={_stats.get('solved',0)} errors={_stats.get('errors',0)} in_flight={_stats.get('in_flight',0)}</div>
+{"<table><tr><th>IP</th><th>Remaining</th><th>Until</th><th></th></tr>" + ban_rows + "</table>" if ban_rows else "<div class='empty'>No bans 🎉</div>"}
+<form method='POST' action='/admin/unban-all' class='unban-all'>
+<button style='background:#e74c3c;color:white;border:none;padding:8px 20px;border-radius:6px;font-size:15px;cursor:pointer'>Unban All ({len(_ip_banned)})</button>
+</form>
+<p style='color:#888;font-size:12px;margin-top:2rem'>POST /admin/unban with {{"ip": "x.x.x.x"}} for API use</p>
+</body></html>"""
+    return web.Response(text=html, content_type="text/html")
     import warnings
     warnings.filterwarnings("ignore")
     os.environ.setdefault("PYTHONWARNINGS", "ignore")
@@ -699,6 +789,10 @@ def main():
     app.router.add_post("/aws-token", handle_aws_token)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/stats", handle_stats)
+    app.router.add_get("/admin", handle_admin_panel)
+    app.router.add_get("/admin/bans", handle_admin_bans)
+    app.router.add_post("/admin/unban", handle_admin_unban)
+    app.router.add_post("/admin/unban-all", handle_admin_unban_all)
     if os.path.isdir(STATIC_DIR):
         app.router.add_static("/static/", STATIC_DIR, show_index=False)
     app.on_startup.append(on_startup)

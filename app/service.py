@@ -688,19 +688,26 @@ async def handle_admin_bans(request: web.Request) -> web.Response:
 
 
 async def handle_admin_unban(request: web.Request) -> web.Response:
-    """POST /admin/unban — unban a specific IP. Body: {"ip": "1.2.3.4"}."""
+    """POST /admin/unban — unban a specific IP. Accepts JSON or form-encoded."""
+    # Try JSON first, then fall back to form data (HTML panel uses forms)
+    ip = ""
     try:
         payload = await _read_payload(request)
-    except ValueError as ve:
-        return web.json_response({"error": str(ve), "error_code": "bad_request"}, status=400)
+        ip = (payload.get("ip") or "").strip()
+    except ValueError:
+        data = await request.post()
+        ip = (data.get("ip") or "").strip()
 
-    ip = (payload.get("ip") or "").strip()
     if not ip:
         return web.json_response({"error": "ip required", "error_code": "bad_request"}, status=400)
 
     existed = _ip_banned.pop(ip, None) is not None
     db.clear_ban(ip) if existed else None
     _kill_ip_tasks(ip)
+
+    # If form-encoded (browser), redirect back to admin panel
+    if request.content_type and "json" not in request.content_type:
+        raise web.HTTPFound("/admin")
 
     return web.json_response({
         "unbanned": existed,
@@ -716,6 +723,10 @@ async def handle_admin_unban_all(request: web.Request) -> web.Response:
         _ip_banned.pop(ip, None)
         db.clear_ban(ip)
         _kill_ip_tasks(ip)
+
+    # If form-encoded (browser), redirect back to admin panel
+    if request.content_type and "json" not in request.content_type:
+        raise web.HTTPFound("/admin")
 
     return web.json_response({"unbanned": count})
 
